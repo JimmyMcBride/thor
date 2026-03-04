@@ -1,0 +1,408 @@
+package assets
+
+import "core:encoding/endian"
+import json "core:encoding/json"
+import "core:fmt"
+import "core:math"
+import "core:os"
+
+GLB_MAGIC :: 0x46546C67
+GLB_VERSION :: 2
+GLB_CHUNK_JSON :: 0x4E4F534A
+GLB_CHUNK_BIN :: 0x004E4942
+
+GLTF_COMPONENT_TYPE_UNSIGNED_BYTE :: 5121
+GLTF_COMPONENT_TYPE_UNSIGNED_SHORT :: 5123
+GLTF_COMPONENT_TYPE_UNSIGNED_INT :: 5125
+GLTF_COMPONENT_TYPE_FLOAT :: 5126
+GLTF_MODE_TRIANGLES :: 4
+
+Mesh_Vertex :: struct {
+	position: [3]f32,
+	normal:   [3]f32,
+}
+
+Mesh :: struct {
+	vertices: []Mesh_Vertex,
+	indices:  []u32,
+}
+
+destroy_mesh :: proc(mesh: ^Mesh) {
+	delete(mesh.vertices)
+	delete(mesh.indices)
+	mesh^ = {}
+}
+
+Gltf_Buffer_View :: struct {
+	buffer:      int,
+	byte_offset: u32 `json:"byteOffset"`,
+	byte_length: u32 `json:"byteLength"`,
+	byte_stride: u32 `json:"byteStride"`,
+}
+
+Gltf_Accessor :: struct {
+	buffer_view:    int    `json:"bufferView"`,
+	byte_offset:    u32    `json:"byteOffset"`,
+	component_type: u32    `json:"componentType"`,
+	count:          u32,
+	type:           string,
+}
+
+Gltf_Primitive_Attributes :: struct {
+	position: int `json:"POSITION"`,
+	normal:   int `json:"NORMAL"`,
+}
+
+Gltf_Mesh_Primitive :: struct {
+	attributes: Gltf_Primitive_Attributes,
+	indices:    int,
+	mode:       int,
+}
+
+Gltf_Mesh :: struct {
+	name:       string,
+	primitives: []Gltf_Mesh_Primitive,
+}
+
+Gltf_Document :: struct {
+	accessors:    []Gltf_Accessor,
+	buffer_views: []Gltf_Buffer_View `json:"bufferViews"`,
+	meshes:       []Gltf_Mesh,
+}
+
+glb_chunk :: struct {
+	kind: u32,
+	data: []byte,
+}
+
+load_mesh_from_glb :: proc(path: string) -> (mesh: Mesh, ok: bool) {
+	file_data, read_ok := os.read_entire_file(path)
+	if !read_ok {
+		fmt.eprintln("Failed to read mesh asset:", path)
+		return {}, false
+	}
+	defer delete(file_data)
+
+	json_chunk, bin_chunk, chunk_ok := parse_glb(file_data)
+	if !chunk_ok {
+		return {}, false
+	}
+
+	doc: Gltf_Document
+	if err := json.unmarshal(json_chunk, &doc, allocator=context.temp_allocator); err != nil {
+		fmt.eprintln("Failed to parse glTF JSON:", err)
+		return {}, false
+	}
+
+	if len(doc.meshes) == 0 || len(doc.meshes[0].primitives) == 0 {
+		fmt.eprintln("glTF file has no mesh primitives:", path)
+		return {}, false
+	}
+
+	primitive := doc.meshes[0].primitives[0]
+	mode := primitive.mode
+	if mode == 0 {
+		mode = GLTF_MODE_TRIANGLES
+	}
+	if mode != GLTF_MODE_TRIANGLES {
+		fmt.eprintln("Only triangle-list glTF primitives are supported")
+		return {}, false
+	}
+	if primitive.attributes.position < 0 || primitive.attributes.normal < 0 || primitive.indices < 0 {
+		fmt.eprintln("glTF primitive is missing POSITION, NORMAL, or indices")
+		return {}, false
+	}
+
+	positions, pos_ok := decode_positions(doc, primitive.attributes.position, bin_chunk)
+	if !pos_ok {
+		return {}, false
+	}
+	defer delete(positions)
+
+	normals, normal_ok := decode_normals(doc, primitive.attributes.normal, bin_chunk)
+	if !normal_ok {
+		return {}, false
+	}
+	defer delete(normals)
+	if len(normals) != len(positions) {
+		fmt.eprintln("glTF NORMAL accessor count does not match POSITION accessor count")
+		return {}, false
+	}
+
+	mesh.indices, ok = decode_indices(doc, primitive.indices, bin_chunk)
+	if !ok {
+		return {}, false
+	}
+
+	mesh.vertices = make([]Mesh_Vertex, len(positions))
+	for i in 0 ..< len(mesh.vertices) {
+		mesh.vertices[i].position = positions[i].position
+		mesh.vertices[i].normal = normals[i]
+	}
+	normalize_mesh(&mesh)
+
+	fmt.println("Loaded mesh asset:", path, "vertices=", len(mesh.vertices), "indices=", len(mesh.indices))
+	return mesh, true
+}
+
+parse_glb :: proc(file_data: []byte) -> (json_chunk: []byte, bin_chunk: []byte, ok: bool) {
+	if len(file_data) < 12 {
+		fmt.eprintln("GLB file too small")
+		return nil, nil, false
+	}
+
+	magic := endian.unchecked_get_u32le(file_data[0:])
+	version := endian.unchecked_get_u32le(file_data[4:])
+	length := endian.unchecked_get_u32le(file_data[8:])
+	if magic != GLB_MAGIC || version != GLB_VERSION {
+		fmt.eprintln("Unsupported GLB header")
+		return nil, nil, false
+	}
+	if int(length) > len(file_data) {
+		fmt.eprintln("GLB length exceeds file size")
+		return nil, nil, false
+	}
+
+	offset := 12
+	for offset + 8 <= int(length) {
+		chunk_length := int(endian.unchecked_get_u32le(file_data[offset:]))
+		chunk_type := endian.unchecked_get_u32le(file_data[offset+4:])
+		offset += 8
+
+		if offset + chunk_length > int(length) {
+			fmt.eprintln("GLB chunk exceeds file size")
+			return nil, nil, false
+		}
+
+		chunk_data := file_data[offset : offset+chunk_length]
+		offset += chunk_length
+
+		switch chunk_type {
+		case GLB_CHUNK_JSON:
+			json_chunk = chunk_data
+		case GLB_CHUNK_BIN:
+			bin_chunk = chunk_data
+		}
+	}
+
+	if len(json_chunk) == 0 || len(bin_chunk) == 0 {
+		fmt.eprintln("GLB is missing JSON or BIN chunks")
+		return nil, nil, false
+	}
+
+	return json_chunk, bin_chunk, true
+}
+
+decode_positions :: proc(doc: Gltf_Document, accessor_index: int, bin_chunk: []byte) -> (vertices: []Mesh_Vertex, ok: bool) {
+	accessor, view, data, stride, access_ok := accessor_bytes(doc, accessor_index, bin_chunk)
+	if !access_ok {
+		return nil, false
+	}
+	if accessor.component_type != GLTF_COMPONENT_TYPE_FLOAT || accessor.type != "VEC3" {
+		fmt.eprintln("Only float VEC3 POSITION accessors are supported")
+		return nil, false
+	}
+	if stride < 12 {
+		fmt.eprintln("POSITION accessor stride is invalid")
+		return nil, false
+	}
+
+	vertices = make([]Mesh_Vertex, accessor.count)
+	base_offset := int(accessor.byte_offset)
+	for i in 0 ..< len(vertices) {
+		offset := base_offset + i * stride
+		if offset + 12 > len(data) {
+			fmt.eprintln("POSITION accessor overruns buffer view")
+			delete(vertices)
+			return nil, false
+		}
+
+		vertices[i].position[0] = transmute(f32)endian.unchecked_get_u32le(data[offset+0:])
+		vertices[i].position[1] = transmute(f32)endian.unchecked_get_u32le(data[offset+4:])
+		vertices[i].position[2] = transmute(f32)endian.unchecked_get_u32le(data[offset+8:])
+	}
+
+	_ = view
+	return vertices, true
+}
+
+decode_normals :: proc(doc: Gltf_Document, accessor_index: int, bin_chunk: []byte) -> (normals: [][3]f32, ok: bool) {
+	accessor, _, data, stride, access_ok := accessor_bytes(doc, accessor_index, bin_chunk)
+	if !access_ok {
+		return nil, false
+	}
+	if accessor.component_type != GLTF_COMPONENT_TYPE_FLOAT || accessor.type != "VEC3" {
+		fmt.eprintln("Only float VEC3 NORMAL accessors are supported")
+		return nil, false
+	}
+	if stride < 12 {
+		fmt.eprintln("NORMAL accessor stride is invalid")
+		return nil, false
+	}
+
+	normals = make([][3]f32, accessor.count)
+	base_offset := int(accessor.byte_offset)
+	for i in 0 ..< len(normals) {
+		offset := base_offset + i * stride
+		if offset + 12 > len(data) {
+			fmt.eprintln("NORMAL accessor overruns buffer view")
+			delete(normals)
+			return nil, false
+		}
+
+		normals[i][0] = transmute(f32)endian.unchecked_get_u32le(data[offset+0:])
+		normals[i][1] = transmute(f32)endian.unchecked_get_u32le(data[offset+4:])
+		normals[i][2] = transmute(f32)endian.unchecked_get_u32le(data[offset+8:])
+	}
+
+	return normals, true
+}
+
+decode_indices :: proc(doc: Gltf_Document, accessor_index: int, bin_chunk: []byte) -> (indices: []u32, ok: bool) {
+	accessor, _, data, stride, access_ok := accessor_bytes(doc, accessor_index, bin_chunk)
+	if !access_ok {
+		return nil, false
+	}
+	if accessor.type != "SCALAR" {
+		fmt.eprintln("Only scalar index accessors are supported")
+		return nil, false
+	}
+
+	elem_size := accessor_component_size(accessor.component_type)
+	if elem_size == 0 || stride < elem_size {
+		fmt.eprintln("Index accessor stride is invalid")
+		return nil, false
+	}
+
+	indices = make([]u32, accessor.count)
+	base_offset := int(accessor.byte_offset)
+	for i in 0 ..< len(indices) {
+		offset := base_offset + i * stride
+		if offset + elem_size > len(data) {
+			fmt.eprintln("Index accessor overruns buffer view")
+			delete(indices)
+			return nil, false
+		}
+
+		switch accessor.component_type {
+		case GLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+			indices[i] = u32(data[offset])
+		case GLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+			indices[i] = u32(endian.unchecked_get_u16le(data[offset:]))
+		case GLTF_COMPONENT_TYPE_UNSIGNED_INT:
+			indices[i] = endian.unchecked_get_u32le(data[offset:])
+		case:
+			fmt.eprintln("Unsupported glTF index component type:", accessor.component_type)
+			delete(indices)
+			return nil, false
+		}
+	}
+
+	return indices, true
+}
+
+accessor_bytes :: proc(doc: Gltf_Document, accessor_index: int, bin_chunk: []byte) -> (accessor: Gltf_Accessor, view: Gltf_Buffer_View, data: []byte, stride: int, ok: bool) {
+	if accessor_index < 0 || accessor_index >= len(doc.accessors) {
+		fmt.eprintln("Accessor index out of range:", accessor_index)
+		return {}, {}, nil, 0, false
+	}
+
+	accessor = doc.accessors[accessor_index]
+	if accessor.buffer_view < 0 || accessor.buffer_view >= len(doc.buffer_views) {
+		fmt.eprintln("Accessor bufferView index out of range:", accessor.buffer_view)
+		return {}, {}, nil, 0, false
+	}
+
+	view = doc.buffer_views[accessor.buffer_view]
+	if view.buffer != 0 {
+		fmt.eprintln("Only GLB buffer 0 is supported")
+		return {}, {}, nil, 0, false
+	}
+
+	view_offset := int(view.byte_offset)
+	view_end := view_offset + int(view.byte_length)
+	if view_offset < 0 || view_end > len(bin_chunk) {
+		fmt.eprintln("Buffer view exceeds BIN chunk")
+		return {}, {}, nil, 0, false
+	}
+
+	data = bin_chunk[view_offset:view_end]
+	stride = int(view.byte_stride)
+	if stride == 0 {
+		stride = accessor_packed_size(accessor)
+	}
+	if stride == 0 {
+		fmt.eprintln("Unsupported accessor layout")
+		return {}, {}, nil, 0, false
+	}
+
+	return accessor, view, data, stride, true
+}
+
+accessor_component_size :: proc(component_type: u32) -> int {
+	switch component_type {
+	case GLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+		return 1
+	case GLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+		return 2
+	case GLTF_COMPONENT_TYPE_UNSIGNED_INT, GLTF_COMPONENT_TYPE_FLOAT:
+		return 4
+	case:
+		return 0
+	}
+}
+
+accessor_component_count :: proc(kind: string) -> int {
+	switch kind {
+	case "SCALAR":
+		return 1
+	case "VEC2":
+		return 2
+	case "VEC3":
+		return 3
+	case "VEC4":
+		return 4
+	case:
+		return 0
+	}
+}
+
+accessor_packed_size :: proc(accessor: Gltf_Accessor) -> int {
+	return accessor_component_size(accessor.component_type) * accessor_component_count(accessor.type)
+}
+
+normalize_mesh :: proc(mesh: ^Mesh) {
+	if len(mesh.vertices) == 0 {
+		return
+	}
+
+	min_pos := mesh.vertices[0].position
+	max_pos := mesh.vertices[0].position
+
+	for vertex in mesh.vertices[1:] {
+		for axis in 0 ..< 3 {
+			min_pos[axis] = math.min(min_pos[axis], vertex.position[axis])
+			max_pos[axis] = math.max(max_pos[axis], vertex.position[axis])
+		}
+	}
+
+	center := [3]f32{
+		(min_pos[0] + max_pos[0]) * 0.5,
+		(min_pos[1] + max_pos[1]) * 0.5,
+		(min_pos[2] + max_pos[2]) * 0.5,
+	}
+	extent_x := max_pos[0] - min_pos[0]
+	extent_y := max_pos[1] - min_pos[1]
+	extent_z := max_pos[2] - min_pos[2]
+	max_extent := math.max(extent_x, math.max(extent_y, extent_z))
+	if max_extent <= 0 {
+		max_extent = 1
+	}
+
+	scale := f32(1.6) / max_extent
+	for i in 0 ..< len(mesh.vertices) {
+		for axis in 0 ..< 3 {
+			mesh.vertices[i].position[axis] = (mesh.vertices[i].position[axis] - center[axis]) * scale
+		}
+	}
+}

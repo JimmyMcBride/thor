@@ -1,0 +1,21 @@
+{
+	"$schema": "https://raw.githubusercontent.com/DanielGavin/ols/master/misc/ols.schema.json",
+	"collections": [
+		{
+			"name": "thor",
+			"path": "."
+		}
+	],
+	"odin_command": "/home/jimmy/Downloads/odin-linux-amd64-nightly+2026-02-04/odin",
+	"profile": "default",
+	"profiles": [
+		{
+			"name": "default",
+			"checker_path": [
+				"examples/mesh_viewer",
+				"examples/headless_smoke",
+				"engine/app"
+			]
+		}
+	]
+}
