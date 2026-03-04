@@ -25,15 +25,15 @@ What exists today:
 
 - **Language**: Odin (nightly build)
 - **Graphics backend**: Vulkan 1.3 — instance, physical device, logical device, swapchain, image views, render pass, framebuffers, graphics pipeline, double-buffered frame loop with semaphore/fence synchronization
-- **Asset import**: `.glb` mesh loading for a first Blender-to-engine path — extracts indexed triangle geometry, skinning data, and animation clips from the sample asset
+- **Asset import**: `.glb` mesh loading for a first Blender-to-engine path — extracts primitive/material structure for static meshes plus skinning data and animation clips from the sample asset
 - **Shaders**: GLSL compiled to SPIR-V via glslc at build time
 - **Windowing & input**: SDL2 — keyboard, mouse, and window events (resize, close)
 - **Game loop**: Fixed 60 Hz timestep with accumulator pattern, variable render tick, delta cap at 0.25s
 - **ECS foundation**: `Entity` (distinct u64) + `World` type — spawn/destroy infrastructure, no component storage yet
-- **Rendering**: Imported mesh rendering from `examples/assets/` on a dark blue-gray background. Dynamic viewport/scissor — survives window resize without pipeline recreation.
+- **Rendering**: Imported mesh rendering from `examples/assets/` with a first cel-shaded forward pass and inverted-hull outlines. Static meshes now draw per imported primitive/material, and examples can override cel settings in code. Dynamic viewport/scissor — survives window resize without pipeline recreation.
 - **Animation playback**: `examples/animation_viewer` evaluates the sample GLB's skeletal clips on the CPU, skins the mesh every frame, and provides an in-window searchable clip picker with Play and Loop controls.
 
-Honest status: first Blender-exported mesh is on the render path. Materials, scene traversal, coordinate-bridge cleanup, and animation are still ahead.
+Honest status: first Blender-exported mesh is on the render path with a stylized first-pass look. Material import, scene traversal, coordinate-bridge cleanup, and richer lighting/shadows are still ahead.
 
 ---
 
@@ -46,7 +46,7 @@ Rough milestone breakdown of what comes next, roughly in order:
 | ~~**M2**~~ | ~~Triangle on screen — graphics pipeline, shaders, vertex buffers~~ ✓ |
 | ~~**M3**~~ | ~~Initial mesh loading + Blender `.glb` import path~~ ✓ |
 | **M4** | Blender coordinate bridge — Z-up import with no surprises |
-| **M5** | Materials + cel shading render pass |
+| **M5** | Material import + richer cel shading render path |
 | **M6** | ECS component storage + basic transform/render components |
 | **M7** | Skeletal animation system |
 | **M8** | IK / reverse IK for procedural locomotion |

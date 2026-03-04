@@ -18,6 +18,20 @@ load_mesh_from_glb_extracts_positions_and_indices :: proc(t: ^testing.T) {
 }
 
 @(test)
+load_scene_mesh_from_glb_extracts_primitives_and_materials :: proc(t: ^testing.T) {
+	scene_mesh, ok := load_scene_mesh_from_glb(TEST_MESH_PATH)
+	testing.expect_value(t, ok, true)
+	if !ok {
+		return
+	}
+	defer destroy_scene_mesh(&scene_mesh)
+
+	testing.expect_value(t, len(scene_mesh.primitives), 2)
+	testing.expect_value(t, len(scene_mesh.materials), 2)
+	testing.expect_value(t, len(scene_mesh.primitives[0].vertices) > 0, true)
+}
+
+@(test)
 load_animation_catalog_from_glb_extracts_clip_names_and_durations :: proc(t: ^testing.T) {
 	catalog, ok := load_animation_catalog_from_glb(TEST_MESH_PATH)
 	testing.expect_value(t, ok, true)

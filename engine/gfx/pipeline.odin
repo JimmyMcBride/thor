@@ -124,17 +124,41 @@ destroy_framebuffers :: proc(device: vk.Device, sc: ^Swapchain) {
 	sc.framebuffers = nil
 }
 
-create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layout: vk.PipelineLayout, pipeline: vk.Pipeline, ok: bool) {
-	vert_code, vert_ok := os.read_entire_file("shaders/mesh_viewer.vert.spv")
+create_cel_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass, descriptor_set_layout: vk.DescriptorSetLayout) -> (layout: vk.PipelineLayout, pipeline: vk.Pipeline, ok: bool) {
+	return create_mesh_pipeline(
+		device,
+		render_pass,
+		descriptor_set_layout,
+		"shaders/cel.vert.spv",
+		"shaders/cel.frag.spv",
+		{.BACK},
+		false,
+	)
+}
+
+create_outline_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass, descriptor_set_layout: vk.DescriptorSetLayout) -> (layout: vk.PipelineLayout, pipeline: vk.Pipeline, ok: bool) {
+	return create_mesh_pipeline(
+		device,
+		render_pass,
+		descriptor_set_layout,
+		"shaders/outline.vert.spv",
+		"shaders/outline.frag.spv",
+		{.FRONT},
+		true,
+	)
+}
+
+create_mesh_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass, descriptor_set_layout: vk.DescriptorSetLayout, vert_path, frag_path: string, cull_mode: vk.CullModeFlags, depth_bias_enable: bool) -> (layout: vk.PipelineLayout, pipeline: vk.Pipeline, ok: bool) {
+	vert_code, vert_ok := os.read_entire_file(vert_path)
 	if !vert_ok {
-		fmt.eprintln("Failed to read shaders/mesh_viewer.vert.spv")
+		fmt.eprintln("Failed to read", vert_path)
 		return {}, {}, false
 	}
 	defer delete(vert_code)
 
-	frag_code, frag_ok := os.read_entire_file("shaders/mesh_viewer.frag.spv")
+	frag_code, frag_ok := os.read_entire_file(frag_path)
 	if !frag_ok {
-		fmt.eprintln("Failed to read shaders/mesh_viewer.frag.spv")
+		fmt.eprintln("Failed to read", frag_path)
 		return {}, {}, false
 	}
 	defer delete(frag_code)
@@ -146,18 +170,8 @@ create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layou
 	defer vk.DestroyShaderModule(device, frag_module, nil)
 
 	shader_stages := [2]vk.PipelineShaderStageCreateInfo{
-		{
-			sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-			stage  = {.VERTEX},
-			module = vert_module,
-			pName  = "main",
-		},
-		{
-			sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-			stage  = {.FRAGMENT},
-			module = frag_module,
-			pName  = "main",
-		},
+		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.VERTEX}, module = vert_module, pName = "main"},
+		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = frag_module, pName = "main"},
 	}
 
 	vertex_binding := vk.VertexInputBindingDescription{
@@ -165,28 +179,16 @@ create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layou
 		stride    = u32(size_of(assets.Mesh_Vertex)),
 		inputRate = .VERTEX,
 	}
-	vertex_attribute := vk.VertexInputAttributeDescription{
-		location = 0,
-		binding  = 0,
-		format   = .R32G32B32_SFLOAT,
-		offset   = u32(offset_of(assets.Mesh_Vertex, position)),
-	}
-	vertex_normal_attribute := vk.VertexInputAttributeDescription{
-		location = 1,
-		binding  = 0,
-		format   = .R32G32B32_SFLOAT,
-		offset   = u32(offset_of(assets.Mesh_Vertex, normal)),
-	}
 	vertex_attributes := [2]vk.VertexInputAttributeDescription{
-		vertex_attribute,
-		vertex_normal_attribute,
+		{location = 0, binding = 0, format = .R32G32B32_SFLOAT, offset = u32(offset_of(assets.Mesh_Vertex, position))},
+		{location = 1, binding = 0, format = .R32G32B32_SFLOAT, offset = u32(offset_of(assets.Mesh_Vertex, normal))},
 	}
 
 	vertex_input_state := vk.PipelineVertexInputStateCreateInfo{
 		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		vertexBindingDescriptionCount   = 1,
 		pVertexBindingDescriptions      = &vertex_binding,
-		vertexAttributeDescriptionCount = 2,
+		vertexAttributeDescriptionCount = len(vertex_attributes),
 		pVertexAttributeDescriptions    = &vertex_attributes[0],
 	}
 
@@ -199,7 +201,7 @@ create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layou
 	dynamic_states := [2]vk.DynamicState{.VIEWPORT, .SCISSOR}
 	dynamic_state := vk.PipelineDynamicStateCreateInfo{
 		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		dynamicStateCount = 2,
+		dynamicStateCount = len(dynamic_states),
 		pDynamicStates    = &dynamic_states[0],
 	}
 
@@ -215,33 +217,33 @@ create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layou
 		rasterizerDiscardEnable = false,
 		polygonMode             = .FILL,
 		lineWidth               = 1.0,
-		cullMode                = {.BACK},
+		cullMode                = cull_mode,
 		frontFace               = .COUNTER_CLOCKWISE,
-		depthBiasEnable         = false,
+		depthBiasEnable         = b32(depth_bias_enable),
+		depthBiasConstantFactor = 1.25,
+		depthBiasSlopeFactor    = 1.25,
 	}
 
 	multisample := vk.PipelineMultisampleStateCreateInfo{
 		sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		rasterizationSamples = {._1},
-		sampleShadingEnable  = false,
 	}
+
 	depth_stencil := vk.PipelineDepthStencilStateCreateInfo{
-		sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		depthTestEnable  = true,
-		depthWriteEnable = true,
-		depthCompareOp   = .LESS,
+		sType                 = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		depthTestEnable       = true,
+		depthWriteEnable      = true,
+		depthCompareOp        = .LESS,
 		depthBoundsTestEnable = false,
-		stencilTestEnable = false,
+		stencilTestEnable     = false,
 	}
 
 	color_blend_attachment := vk.PipelineColorBlendAttachmentState{
 		colorWriteMask = {.R, .G, .B, .A},
 		blendEnable    = false,
 	}
-
 	color_blend := vk.PipelineColorBlendStateCreateInfo{
 		sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		logicOpEnable   = false,
 		attachmentCount = 1,
 		pAttachments    = &color_blend_attachment,
 	}
@@ -251,8 +253,11 @@ create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layou
 		offset     = 0,
 		size       = u32(size_of(Scene_Push_Constants)),
 	}
+	set_layout := descriptor_set_layout
 	layout_info := vk.PipelineLayoutCreateInfo{
 		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount         = 1,
+		pSetLayouts            = &set_layout,
 		pushConstantRangeCount = 1,
 		pPushConstantRanges    = &push_constant_range,
 	}
@@ -263,7 +268,7 @@ create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layou
 
 	pipeline_info := vk.GraphicsPipelineCreateInfo{
 		sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
-		stageCount          = 2,
+		stageCount          = len(shader_stages),
 		pStages             = &shader_stages[0],
 		pVertexInputState   = &vertex_input_state,
 		pInputAssemblyState = &input_assembly,
@@ -277,7 +282,6 @@ create_pipeline :: proc(device: vk.Device, render_pass: vk.RenderPass) -> (layou
 		renderPass          = render_pass,
 		subpass             = 0,
 	}
-
 	if vk.CreateGraphicsPipelines(device, {}, 1, &pipeline_info, nil, &pipeline) != .SUCCESS {
 		fmt.eprintln("Failed to create graphics pipeline")
 		vk.DestroyPipelineLayout(device, layout, nil)

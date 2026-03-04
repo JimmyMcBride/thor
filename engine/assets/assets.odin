@@ -27,6 +27,23 @@ Mesh :: struct {
 	indices:  []u32,
 }
 
+Material :: struct {
+	name:       string,
+	base_color: [4]f32,
+}
+
+Mesh_Primitive :: struct {
+	vertices:       []Mesh_Vertex,
+	indices:        []u32,
+	material_index: int,
+}
+
+Scene_Mesh :: struct {
+	primitives:    [dynamic]Mesh_Primitive,
+	materials:     [dynamic]Material,
+	name_storage:  [dynamic][]u8,
+}
+
 Animation_Clip_Info :: struct {
 	name:          string,
 	duration:      f32,
@@ -43,6 +60,20 @@ destroy_mesh :: proc(mesh: ^Mesh) {
 	delete(mesh.vertices)
 	delete(mesh.indices)
 	mesh^ = {}
+}
+
+destroy_scene_mesh :: proc(scene_mesh: ^Scene_Mesh) {
+	for &primitive in scene_mesh.primitives {
+		delete(primitive.vertices)
+		delete(primitive.indices)
+	}
+	delete(scene_mesh.primitives)
+	delete(scene_mesh.materials)
+	for storage in scene_mesh.name_storage {
+		delete(storage)
+	}
+	delete(scene_mesh.name_storage)
+	scene_mesh^ = {}
 }
 
 destroy_animation_catalog :: proc(catalog: ^Animation_Catalog) {
@@ -80,6 +111,7 @@ Gltf_Primitive_Attributes :: struct {
 Gltf_Mesh_Primitive :: struct {
 	attributes: Gltf_Primitive_Attributes,
 	indices:    int,
+	material:   int,
 	mode:       int,
 }
 
@@ -128,12 +160,22 @@ Gltf_Animation :: struct {
 	channels: []Gltf_Animation_Channel,
 }
 
+Gltf_Pbr_Metallic_Roughness :: struct {
+	base_color_factor: [4]f32 `json:"baseColorFactor"`,
+}
+
+Gltf_Material :: struct {
+	name:                    string,
+	pbr_metallic_roughness:  Gltf_Pbr_Metallic_Roughness `json:"pbrMetallicRoughness"`,
+}
+
 Gltf_Document :: struct {
 	accessors:    []Gltf_Accessor,
 	nodes:        []Gltf_Node,
 	skins:        []Gltf_Skin,
 	buffer_views: []Gltf_Buffer_View `json:"bufferViews"`,
 	animations:   []Gltf_Animation,
+	materials:    []Gltf_Material,
 	meshes:       []Gltf_Mesh,
 }
 
@@ -210,6 +252,71 @@ load_mesh_from_glb :: proc(path: string) -> (mesh: Mesh, ok: bool) {
 
 	fmt.println("Loaded mesh asset:", path, "vertices=", len(mesh.vertices), "indices=", len(mesh.indices))
 	return mesh, true
+}
+
+load_scene_mesh_from_glb :: proc(path: string) -> (scene_mesh: Scene_Mesh, ok: bool) {
+	file_data, read_ok := os.read_entire_file(path)
+	if !read_ok {
+		fmt.eprintln("Failed to read scene mesh asset:", path)
+		return {}, false
+	}
+	defer delete(file_data)
+
+	json_chunk, bin_chunk, chunk_ok := parse_glb(file_data)
+	if !chunk_ok {
+		return {}, false
+	}
+
+	doc: Gltf_Document
+	if err := json.unmarshal(json_chunk, &doc, allocator=context.temp_allocator); err != nil {
+		fmt.eprintln("Failed to parse glTF JSON:", err)
+		return {}, false
+	}
+
+	if len(doc.meshes) == 0 || len(doc.meshes[0].primitives) == 0 {
+		fmt.eprintln("glTF file has no mesh primitives:", path)
+		return {}, false
+	}
+
+	scene_mesh.materials = make([dynamic]Material, max(len(doc.materials), 1))
+	if len(doc.materials) == 0 {
+		scene_mesh.materials[0] = {
+			name       = "Default",
+			base_color = {0.82, 0.84, 0.90, 1.0},
+		}
+	} else {
+		for source, index in doc.materials {
+			material_name := source.name
+			if len(material_name) == 0 {
+				material_name = fmt.aprintf("Material_%d", index)
+			}
+			name_storage := clone_string_bytes(material_name)
+			append(&scene_mesh.name_storage, name_storage)
+			base_color := source.pbr_metallic_roughness.base_color_factor
+			if base_color == {} {
+				base_color = [4]f32{0.82, 0.84, 0.90, 1.0}
+			}
+			scene_mesh.materials[index] = {
+				name       = string(name_storage),
+				base_color = base_color,
+			}
+		}
+	}
+
+	for primitive in doc.meshes[0].primitives {
+		mesh_primitive, primitive_ok := decode_mesh_primitive(doc, primitive, bin_chunk)
+		if !primitive_ok {
+			destroy_scene_mesh(&scene_mesh)
+			return {}, false
+		}
+		if mesh_primitive.material_index < 0 || mesh_primitive.material_index >= len(scene_mesh.materials) {
+			mesh_primitive.material_index = 0
+		}
+		append(&scene_mesh.primitives, mesh_primitive)
+	}
+
+	fmt.println("Loaded scene mesh asset:", path, "primitives=", len(scene_mesh.primitives), "materials=", len(scene_mesh.materials))
+	return scene_mesh, true
 }
 
 load_animation_catalog_from_glb :: proc(path: string) -> (catalog: Animation_Catalog, ok: bool) {
@@ -488,6 +595,51 @@ accessor_packed_size :: proc(accessor: Gltf_Accessor) -> int {
 	return accessor_component_size(accessor.component_type) * accessor_component_count(accessor.type)
 }
 
+decode_mesh_primitive :: proc(doc: Gltf_Document, primitive: Gltf_Mesh_Primitive, bin_chunk: []byte) -> (mesh_primitive: Mesh_Primitive, ok: bool) {
+	mode := primitive.mode
+	if mode == 0 {
+		mode = GLTF_MODE_TRIANGLES
+	}
+	if mode != GLTF_MODE_TRIANGLES {
+		fmt.eprintln("Only triangle-list glTF primitives are supported")
+		return {}, false
+	}
+	if primitive.attributes.position < 0 || primitive.attributes.normal < 0 || primitive.indices < 0 {
+		fmt.eprintln("glTF primitive is missing POSITION, NORMAL, or indices")
+		return {}, false
+	}
+
+	positions, pos_ok := decode_positions(doc, primitive.attributes.position, bin_chunk)
+	if !pos_ok {
+		return {}, false
+	}
+	defer delete(positions)
+
+	normals, normal_ok := decode_normals(doc, primitive.attributes.normal, bin_chunk)
+	if !normal_ok {
+		return {}, false
+	}
+	defer delete(normals)
+	if len(normals) != len(positions) {
+		fmt.eprintln("glTF NORMAL accessor count does not match POSITION accessor count")
+		return {}, false
+	}
+
+	mesh_primitive.indices, ok = decode_indices(doc, primitive.indices, bin_chunk)
+	if !ok {
+		return {}, false
+	}
+
+	mesh_primitive.vertices = make([]Mesh_Vertex, len(positions))
+	for i in 0 ..< len(mesh_primitive.vertices) {
+		mesh_primitive.vertices[i].position = positions[i].position
+		mesh_primitive.vertices[i].normal = normals[i]
+	}
+	normalize_mesh_primitive(&mesh_primitive)
+	mesh_primitive.material_index = primitive.material
+	return mesh_primitive, true
+}
+
 animation_duration :: proc(doc: Gltf_Document, animation: Gltf_Animation, bin_chunk: []byte) -> (duration: f32, ok: bool) {
 	for sampler in animation.samplers {
 		sampler_duration, duration_ok := decode_max_time(doc, sampler.input, bin_chunk)
@@ -569,4 +721,14 @@ normalize_mesh :: proc(mesh: ^Mesh) {
 			mesh.vertices[i].position[axis] = (mesh.vertices[i].position[axis] - center[axis]) * scale
 		}
 	}
+}
+
+normalize_mesh_primitive :: proc(primitive: ^Mesh_Primitive) {
+	mesh := Mesh{
+		vertices = primitive.vertices,
+		indices  = primitive.indices,
+	}
+	normalize_mesh(&mesh)
+	primitive.vertices = mesh.vertices
+	primitive.indices = mesh.indices
 }

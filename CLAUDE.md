@@ -1,7 +1,7 @@
 # Thor
 
 A Vulkan 1.3 game engine written in Odin, using SDL2 for windowing/input.
-Currently at **Milestone 3 (first slice)**: imported `.glb` mesh rendering, skeletal animation playback in the sample viewer, full graphics pipeline, ECS foundation, and a fixed-timestep game loop.
+Currently at **Milestone 3 (first slice)**: imported `.glb` mesh rendering with a first cel-shaded + outline pass, skeletal animation playback in the sample viewer, full graphics pipeline, ECS foundation, and a fixed-timestep game loop.
 
 ## Quick Start
 
@@ -28,15 +28,17 @@ test.sh                       # Runs app tests + headless smoke example
 engine/
   app/app.odin               # Headless app lifecycle, schedules, time/input/window resources
   animation/animation.odin   # CPU clip sampling + skinning runtime for the animation viewer
-  assets/assets.odin         # Minimal GLB mesh loader + animation catalog extraction
+  assets/assets.odin         # Minimal GLB mesh/material loader + animation catalog extraction
   platform/platform.odin      # SDL2 windowing/input + app sync adapter bridge
   gfx/                        # Vulkan graphics subsystem
     gfx.odin                  #   Gfx_Context, create/destroy, swapchain recreation
+    cel.odin                  #   Cel scene/material GPU data + descriptor plumbing
     instance.odin              #   Vulkan instance, queue families, device selection
     device.odin                #   Logical device creation
     swapchain.odin             #   Swapchain, image views, format/present mode
     frame.odin                 #   Frame sync, command recording, image transitions
     mesh.odin                  #   Vertex/index buffer upload for imported meshes
+    pipeline.odin              #   Cel, outline, and shared mesh pipeline creation
     ui.odin                    #   Lightweight 2D overlay pipeline for debug/example UI
   game/game.odin              # Game system registration + temporary render bridge
   ecs/ecs.odin                # Entity (u64), World, spawn/destroy
@@ -72,9 +74,11 @@ gfx.Render_Bridge, gfx.create_context(), gfx.install(), gfx.render_app()
 
 // Assets
 import "engine/assets"
-assets.Mesh, assets.Mesh_Vertex, assets.Animation_Catalog, assets.Animation_Clip_Info
+assets.Mesh, assets.Mesh_Vertex, assets.Scene_Mesh, assets.Mesh_Primitive, assets.Material
+assets.Animation_Catalog, assets.Animation_Clip_Info
 assets.Skinned_Asset, assets.Animation_Clip, assets.Node_Transform
-assets.load_mesh_from_glb(), assets.load_animation_catalog_from_glb(), assets.load_skinned_asset_from_glb()
+assets.load_mesh_from_glb(), assets.load_scene_mesh_from_glb()
+assets.load_animation_catalog_from_glb(), assets.load_skinned_asset_from_glb()
 
 // Game
 import "engine/game"

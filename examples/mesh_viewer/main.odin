@@ -27,6 +27,12 @@ main :: proc() {
 	}
 	defer gfx.destroy_context(&ctx)
 
+	cel_scene := gfx.default_cel_scene_data()
+	cel_scene.cel_params = [4]f32{3.0, 1.0, 0.68, 0.56}
+	cel_scene.material_params = [4]f32{0.18, 0.010, 0.0, 0.0}
+	cel_scene.outline_color = [4]f32{0.02, 0.02, 0.03, 1.0}
+	gfx.set_cel_scene(&ctx, cel_scene)
+
 	engine_app: app.App
 	app.init(&engine_app)
 	defer app.destroy(&engine_app)

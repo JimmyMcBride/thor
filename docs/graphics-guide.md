@@ -7,7 +7,9 @@
 | File | Responsibility |
 |------|---------------|
 | `gfx.odin` | `Gfx_Context` struct, `create_context`, `destroy_context`, `recreate_swapchain` |
-| `mesh.odin` | GPU mesh buffers, memory allocation, vertex/index upload |
+| `cel.odin` | Cel-scene uniform data, descriptor set layout/pool/set creation |
+| `mesh.odin` | GPU mesh/scene-mesh buffers, memory allocation, vertex/index upload |
+| `pipeline.odin` | Shared mesh pipeline creation, cel pass, outline pass |
 | `instance.odin` | Vulkan instance, validation layers, `Queue_Family_Indices`, physical device selection |
 | `device.odin` | Logical device creation, queue retrieval |
 | `swapchain.odin` | `Swapchain` struct, format/present mode/extent selection, image view creation |
@@ -49,10 +51,12 @@ Gfx_Context :: struct {
 7. create_logical_device()              — unique queue families, VK_KHR_swapchain extension
    vk.load_proc_addresses_device()
 8. create_swapchain()                   — B8G8R8A8_SRGB preferred, MAILBOX→FIFO
-9. Load `.glb` mesh + upload vertex/index buffers
-10. CreateCommandPool()                 — RESET_COMMAND_BUFFER flag
-11. AllocateCommandBuffers()            — 2 primary buffers
-12. Create semaphores + fences          — fences start SIGNALED
+9. Create cel descriptor set layout/pool + per-frame uniform buffers
+10. Create cel pass, outline pass, and UI pipelines
+11. Load `.glb` scene mesh + upload vertex/index buffers
+12. CreateCommandPool()                 — RESET_COMMAND_BUFFER flag
+13. AllocateCommandBuffers()            — 2 primary buffers
+14. Create semaphores + fences          — fences start SIGNALED
 ```
 
 ## Frame Rendering Flow
@@ -91,16 +95,17 @@ Gfx_Context :: struct {
 
 ## Current Mesh Slice
 
-The current renderer draws one imported `.glb` primitive with:
+The current renderer draws imported `.glb` static meshes as primitive/material batches with two stylized passes:
 
-1. **CPU mesh extraction** — `POSITION` + indices from the first mesh primitive
-2. **CPU normalization** — fit imported bounds into clip-friendly space until a camera exists
-3. **GPU upload** — host-visible Vulkan vertex/index buffers
-4. **Indexed draw** — `CmdBindVertexBuffers`, `CmdBindIndexBuffer`, `CmdDrawIndexed`
+1. **CPU scene-mesh extraction** — primitive-local `POSITION` + `NORMAL` plus imported material base colors
+2. **CPU normalization** — each primitive is normalized into the current viewer-friendly framing
+3. **GPU upload** — host-visible Vulkan vertex/index buffers per primitive
+4. **Outline pass** — inverted-hull draw with front-face culling
+5. **Cel pass** — quantized diffuse/spec/rim lighting using per-frame cel scene data, with per-primitive material color overrides
 
 Key considerations:
 - Framebuffers must be recreated alongside swapchain
-- Pipeline layout is independent of swapchain (can be created once)
+- Cel descriptor sets and pipeline layouts are independent of swapchain (can be created once)
 - Use dynamic viewport/scissor to avoid pipeline recreation on resize
 
 ## Common Vulkan Errors

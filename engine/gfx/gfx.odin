@@ -35,10 +35,19 @@ Gfx_Context :: struct {
 	in_flight_fences:           [MAX_FRAMES_IN_FLIGHT]vk.Fence,
 
 	// Pipeline
-	render_pass:     vk.RenderPass,
-	pipeline_layout: vk.PipelineLayout,
-	pipeline:        vk.Pipeline,
-	mesh:            Gpu_Mesh,
+	render_pass:            vk.RenderPass,
+	descriptor_set_layout:  vk.DescriptorSetLayout,
+	descriptor_pool:        vk.DescriptorPool,
+	descriptor_sets:        [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet,
+	cel_uniform_buffers:    [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
+	cel_uniform_memories:   [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
+	pipeline_layout:        vk.PipelineLayout,
+	pipeline:               vk.Pipeline,
+	outline_pipeline_layout: vk.PipelineLayout,
+	outline_pipeline:        vk.Pipeline,
+	cel_scene:             Cel_Scene_Data,
+	scene_mesh:            Gpu_Scene_Mesh,
+	mesh:                  Gpu_Mesh,
 	ui_pipeline_layout: vk.PipelineLayout,
 	ui_pipeline:        vk.Pipeline,
 	ui_vertex_buffers:  [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
@@ -121,7 +130,22 @@ create_context :: proc(win: ^platform.Window, config: Context_Config) -> (ctx: G
 	// Create render pass, framebuffers, and pipeline
 	ctx.render_pass = create_render_pass(ctx.device, ctx.swapchain.format, ctx.swapchain.depth_format) or_return
 	create_framebuffers(ctx.device, ctx.render_pass, &ctx.swapchain) or_return
-	ctx.pipeline_layout, ctx.pipeline = create_pipeline(ctx.device, ctx.render_pass) or_return
+	ctx.descriptor_set_layout = create_cel_descriptor_set_layout(ctx.device) or_return
+	ctx.descriptor_pool, ctx.descriptor_sets = create_cel_descriptor_pool_and_sets(ctx.device, ctx.descriptor_set_layout) or_return
+	for frame_index in 0 ..< MAX_FRAMES_IN_FLIGHT {
+		ctx.cel_uniform_buffers[frame_index], ctx.cel_uniform_memories[frame_index], ok = create_buffer(
+			&ctx,
+			vk.DeviceSize(size_of(Cel_Scene_Data)),
+			{.UNIFORM_BUFFER},
+		)
+		if !ok {
+			return {}, false
+		}
+	}
+	write_cel_descriptor_sets(ctx.device, ctx.descriptor_sets[:], ctx.cel_uniform_buffers[:])
+	ctx.cel_scene = default_cel_scene_data()
+	ctx.pipeline_layout, ctx.pipeline = create_cel_pipeline(ctx.device, ctx.render_pass, ctx.descriptor_set_layout) or_return
+	ctx.outline_pipeline_layout, ctx.outline_pipeline = create_outline_pipeline(ctx.device, ctx.render_pass, ctx.descriptor_set_layout) or_return
 	ctx.ui_pipeline_layout, ctx.ui_pipeline = create_ui_pipeline(ctx.device, ctx.render_pass) or_return
 
 	for frame_index in 0 ..< MAX_FRAMES_IN_FLIGHT {
@@ -136,8 +160,8 @@ create_context :: proc(win: ^platform.Window, config: Context_Config) -> (ctx: G
 	}
 
 	if len(config.mesh_path) > 0 {
-		mesh := assets.load_mesh_from_glb(config.mesh_path) or_return
-		ctx.mesh = create_gpu_mesh(&ctx, mesh) or_return
+		scene_mesh := assets.load_scene_mesh_from_glb(config.mesh_path) or_return
+		ctx.scene_mesh = create_gpu_scene_mesh(&ctx, scene_mesh) or_return
 	}
 
 	// Create command pool
@@ -190,17 +214,26 @@ destroy_context :: proc(ctx: ^Gfx_Context) {
 	vk.DeviceWaitIdle(ctx.device)
 
 	// Destroy pipeline
+	if len(ctx.scene_mesh.primitives) > 0 {
+		destroy_gpu_scene_mesh(ctx.device, &ctx.scene_mesh)
+	}
 	if ctx.mesh.index_count > 0 {
 		destroy_gpu_mesh(ctx.device, &ctx.mesh)
 	}
 	for frame_index in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		vk.DestroyBuffer(ctx.device, ctx.ui_vertex_buffers[frame_index], nil)
 		vk.FreeMemory(ctx.device, ctx.ui_vertex_memories[frame_index], nil)
+		vk.DestroyBuffer(ctx.device, ctx.cel_uniform_buffers[frame_index], nil)
+		vk.FreeMemory(ctx.device, ctx.cel_uniform_memories[frame_index], nil)
 	}
 	vk.DestroyPipeline(ctx.device, ctx.ui_pipeline, nil)
 	vk.DestroyPipelineLayout(ctx.device, ctx.ui_pipeline_layout, nil)
+	vk.DestroyPipeline(ctx.device, ctx.outline_pipeline, nil)
+	vk.DestroyPipelineLayout(ctx.device, ctx.outline_pipeline_layout, nil)
 	vk.DestroyPipeline(ctx.device, ctx.pipeline, nil)
 	vk.DestroyPipelineLayout(ctx.device, ctx.pipeline_layout, nil)
+	vk.DestroyDescriptorPool(ctx.device, ctx.descriptor_pool, nil)
+	vk.DestroyDescriptorSetLayout(ctx.device, ctx.descriptor_set_layout, nil)
 	destroy_framebuffers(ctx.device, &ctx.swapchain)
 	vk.DestroyRenderPass(ctx.device, ctx.render_pass, nil)
 

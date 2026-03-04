@@ -91,6 +91,14 @@ main :: proc() {
 	}
 	defer gfx.destroy_context(&ctx)
 
+	cel_scene := gfx.default_cel_scene_data()
+	cel_scene.base_color = [4]f32{0.78, 0.80, 0.86, 1.0}
+	cel_scene.shade_color = [4]f32{0.62, 0.66, 0.76, 1.0}
+	cel_scene.shadow_color = [4]f32{0.33, 0.38, 0.52, 1.0}
+	cel_scene.rim_color = [4]f32{0.52, 0.64, 0.92, 1.0}
+	cel_scene.material_params = [4]f32{0.24, 0.009, 0.0, 0.0}
+	gfx.set_cel_scene(&ctx, cel_scene)
+
 	bind_pose_mesh := assets.build_bind_pose_mesh(&viewer.asset)
 	dynamic_mesh, mesh_ok := gfx.create_dynamic_gpu_mesh(&ctx, bind_pose_mesh)
 	if !mesh_ok {

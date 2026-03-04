@@ -14,6 +14,22 @@ Gpu_Mesh :: struct {
 	index_count:   u32,
 }
 
+Gpu_Scene_Primitive :: struct {
+	primitive:      assets.Mesh_Primitive,
+	vertex_buffer:  vk.Buffer,
+	vertex_memory:  vk.DeviceMemory,
+	index_buffer:   vk.Buffer,
+	index_memory:   vk.DeviceMemory,
+	index_count:    u32,
+	material_index: int,
+}
+
+Gpu_Scene_Mesh :: struct {
+	primitives:   [dynamic]Gpu_Scene_Primitive,
+	materials:    [dynamic]assets.Material,
+	name_storage: [dynamic][]u8,
+}
+
 Dynamic_Gpu_Mesh :: struct {
 	mesh:            assets.Mesh,
 	vertex_buffers:  [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
@@ -56,6 +72,110 @@ create_gpu_mesh :: proc(ctx: ^Gfx_Context, mesh: assets.Mesh) -> (gpu_mesh: Gpu_
 	return gpu_mesh, true
 }
 
+create_gpu_scene_mesh :: proc(ctx: ^Gfx_Context, scene_mesh: assets.Scene_Mesh) -> (gpu_scene_mesh: Gpu_Scene_Mesh, ok: bool) {
+	for storage in scene_mesh.name_storage {
+		append(&gpu_scene_mesh.name_storage, storage)
+	}
+	for source_material in scene_mesh.materials {
+		append(&gpu_scene_mesh.materials, source_material)
+	}
+
+	for source_primitive in scene_mesh.primitives {
+		gpu_primitive := Gpu_Scene_Primitive{
+			primitive      = source_primitive,
+			material_index = source_primitive.material_index,
+		}
+		gpu_primitive.vertex_buffer, gpu_primitive.vertex_memory, ok = create_buffer_with_data(
+			ctx,
+			source_primitive.vertices,
+			{.VERTEX_BUFFER},
+		)
+		if !ok {
+			destroy_gpu_scene_mesh(ctx.device, &gpu_scene_mesh)
+			return {}, false
+		}
+
+		gpu_primitive.index_buffer, gpu_primitive.index_memory, ok = create_buffer_with_data(
+			ctx,
+			source_primitive.indices,
+			{.INDEX_BUFFER},
+		)
+		if !ok {
+			destroy_gpu_scene_mesh(ctx.device, &gpu_scene_mesh)
+			return {}, false
+		}
+		gpu_primitive.index_count = u32(len(source_primitive.indices))
+		append(&gpu_scene_mesh.primitives, gpu_primitive)
+	}
+
+	return gpu_scene_mesh, true
+}
+
+draw_gpu_mesh :: proc(ctx: ^Gfx_Context, mesh: ^Gpu_Mesh, push_constants: Scene_Push_Constants) {
+	if !update_cel_scene_buffer(ctx) {
+		return
+	}
+
+	cmd := ctx.command_buffers[ctx.current_frame]
+	push := push_constants
+	vertex_buffers := [1]vk.Buffer{mesh.vertex_buffer}
+	offsets := [1]vk.DeviceSize{0}
+	descriptor_set := ctx.descriptor_sets[ctx.current_frame]
+
+	vk.CmdBindPipeline(cmd, .GRAPHICS, ctx.outline_pipeline)
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, ctx.outline_pipeline_layout, 0, 1, &descriptor_set, 0, nil)
+	vk.CmdPushConstants(
+		cmd,
+		ctx.outline_pipeline_layout,
+		{.VERTEX},
+		0,
+		u32(size_of(Scene_Push_Constants)),
+		&push,
+	)
+	vk.CmdBindVertexBuffers(cmd, 0, 1, &vertex_buffers[0], &offsets[0])
+	vk.CmdBindIndexBuffer(cmd, mesh.index_buffer, 0, .UINT32)
+	vk.CmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0)
+
+	vk.CmdBindPipeline(cmd, .GRAPHICS, ctx.pipeline)
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, ctx.pipeline_layout, 0, 1, &descriptor_set, 0, nil)
+	vk.CmdPushConstants(
+		cmd,
+		ctx.pipeline_layout,
+		{.VERTEX},
+		0,
+		u32(size_of(Scene_Push_Constants)),
+		&push,
+	)
+	vk.CmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0)
+}
+
+draw_gpu_scene_mesh :: proc(ctx: ^Gfx_Context, scene_mesh: ^Gpu_Scene_Mesh, push_constants: Scene_Push_Constants) {
+	for &primitive in scene_mesh.primitives {
+		ctx.cel_scene = cel_scene_for_material(ctx.cel_scene, scene_mesh.materials[clamp(primitive.material_index, 0, len(scene_mesh.materials)-1)])
+		if !update_cel_scene_buffer(ctx) {
+			return
+		}
+
+		cmd := ctx.command_buffers[ctx.current_frame]
+		push := push_constants
+		vertex_buffers := [1]vk.Buffer{primitive.vertex_buffer}
+		offsets := [1]vk.DeviceSize{0}
+		descriptor_set := ctx.descriptor_sets[ctx.current_frame]
+
+		vk.CmdBindPipeline(cmd, .GRAPHICS, ctx.outline_pipeline)
+		vk.CmdBindDescriptorSets(cmd, .GRAPHICS, ctx.outline_pipeline_layout, 0, 1, &descriptor_set, 0, nil)
+		vk.CmdPushConstants(cmd, ctx.outline_pipeline_layout, {.VERTEX}, 0, u32(size_of(Scene_Push_Constants)), &push)
+		vk.CmdBindVertexBuffers(cmd, 0, 1, &vertex_buffers[0], &offsets[0])
+		vk.CmdBindIndexBuffer(cmd, primitive.index_buffer, 0, .UINT32)
+		vk.CmdDrawIndexed(cmd, primitive.index_count, 1, 0, 0, 0)
+
+		vk.CmdBindPipeline(cmd, .GRAPHICS, ctx.pipeline)
+		vk.CmdBindDescriptorSets(cmd, .GRAPHICS, ctx.pipeline_layout, 0, 1, &descriptor_set, 0, nil)
+		vk.CmdPushConstants(cmd, ctx.pipeline_layout, {.VERTEX}, 0, u32(size_of(Scene_Push_Constants)), &push)
+		vk.CmdDrawIndexed(cmd, primitive.index_count, 1, 0, 0, 0)
+	}
+}
+
 destroy_gpu_mesh :: proc(device: vk.Device, mesh: ^Gpu_Mesh) {
 	vk.DestroyBuffer(device, mesh.index_buffer, nil)
 	vk.FreeMemory(device, mesh.index_memory, nil)
@@ -63,6 +183,24 @@ destroy_gpu_mesh :: proc(device: vk.Device, mesh: ^Gpu_Mesh) {
 	vk.FreeMemory(device, mesh.vertex_memory, nil)
 	assets.destroy_mesh(&mesh.mesh)
 	mesh^ = {}
+}
+
+destroy_gpu_scene_mesh :: proc(device: vk.Device, scene_mesh: ^Gpu_Scene_Mesh) {
+	for &primitive in scene_mesh.primitives {
+		vk.DestroyBuffer(device, primitive.index_buffer, nil)
+		vk.FreeMemory(device, primitive.index_memory, nil)
+		vk.DestroyBuffer(device, primitive.vertex_buffer, nil)
+		vk.FreeMemory(device, primitive.vertex_memory, nil)
+		delete(primitive.primitive.vertices)
+		delete(primitive.primitive.indices)
+	}
+	delete(scene_mesh.primitives)
+	delete(scene_mesh.materials)
+	for storage in scene_mesh.name_storage {
+		delete(storage)
+	}
+	delete(scene_mesh.name_storage)
+	scene_mesh^ = {}
 }
 
 create_dynamic_gpu_mesh :: proc(ctx: ^Gfx_Context, mesh: assets.Mesh) -> (gpu_mesh: Dynamic_Gpu_Mesh, ok: bool) {
@@ -106,12 +244,32 @@ update_dynamic_gpu_mesh :: proc(ctx: ^Gfx_Context, mesh: ^Dynamic_Gpu_Mesh, vert
 }
 
 draw_dynamic_gpu_mesh :: proc(ctx: ^Gfx_Context, mesh: ^Dynamic_Gpu_Mesh, push_constants: Scene_Push_Constants) {
+	if !update_cel_scene_buffer(ctx) {
+		return
+	}
+
 	cmd := ctx.command_buffers[ctx.current_frame]
 	vertex_buffers := [1]vk.Buffer{mesh.vertex_buffers[ctx.current_frame]}
 	offsets := [1]vk.DeviceSize{0}
 	push := push_constants
+	descriptor_set := ctx.descriptor_sets[ctx.current_frame]
+
+	vk.CmdBindPipeline(cmd, .GRAPHICS, ctx.outline_pipeline)
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, ctx.outline_pipeline_layout, 0, 1, &descriptor_set, 0, nil)
+	vk.CmdPushConstants(
+		cmd,
+		ctx.outline_pipeline_layout,
+		{.VERTEX},
+		0,
+		u32(size_of(Scene_Push_Constants)),
+		&push,
+	)
+	vk.CmdBindVertexBuffers(cmd, 0, 1, &vertex_buffers[0], &offsets[0])
+	vk.CmdBindIndexBuffer(cmd, mesh.index_buffer, 0, .UINT32)
+	vk.CmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0)
 
 	vk.CmdBindPipeline(cmd, .GRAPHICS, ctx.pipeline)
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, ctx.pipeline_layout, 0, 1, &descriptor_set, 0, nil)
 	vk.CmdPushConstants(
 		cmd,
 		ctx.pipeline_layout,
@@ -120,8 +278,6 @@ draw_dynamic_gpu_mesh :: proc(ctx: ^Gfx_Context, mesh: ^Dynamic_Gpu_Mesh, push_c
 		u32(size_of(Scene_Push_Constants)),
 		&push,
 	)
-	vk.CmdBindVertexBuffers(cmd, 0, 1, &vertex_buffers[0], &offsets[0])
-	vk.CmdBindIndexBuffer(cmd, mesh.index_buffer, 0, .UINT32)
 	vk.CmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0)
 }
 
