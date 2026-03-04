@@ -28,6 +28,12 @@ Input :: struct {
 	mouse_dx:      i32,
 	mouse_dy:      i32,
 	mouse_buttons: [5]bool,
+	mouse_pressed: [5]bool,
+	mouse_released: [5]bool,
+	mouse_wheel_x: i32,
+	mouse_wheel_y: i32,
+	text_input_count: int,
+	text_input:    [32]u8,
 }
 
 Platform_Bridge :: struct {
@@ -79,12 +85,34 @@ destroy_window :: proc(win: ^Window) {
 	sdl.Quit()
 }
 
+start_text_input :: proc() {
+	sdl.StartTextInput()
+}
+
+stop_text_input :: proc() {
+	sdl.StopTextInput()
+}
+
+set_window_title :: proc(win: ^Window, title: cstring) {
+	if win.handle == nil {
+		return
+	}
+
+	sdl.SetWindowTitle(win.handle, title)
+}
+
 poll_events :: proc(win: ^Window, input: ^Input) {
 	// Clear per-frame input state
 	input.keys_pressed = {}
 	input.keys_released = {}
 	input.mouse_dx = 0
 	input.mouse_dy = 0
+	input.mouse_pressed = {}
+	input.mouse_released = {}
+	input.mouse_wheel_x = 0
+	input.mouse_wheel_y = 0
+	input.text_input_count = 0
+	input.text_input = {}
 	win.resized = false
 
 	event: sdl.Event
@@ -132,6 +160,9 @@ poll_events :: proc(win: ^Window, input: ^Input) {
 		case .MOUSEBUTTONDOWN:
 			btn := int(event.button.button) - 1
 			if btn >= 0 && btn < 5 {
+				if !input.mouse_buttons[btn] {
+					input.mouse_pressed[btn] = true
+				}
 				input.mouse_buttons[btn] = true
 			}
 
@@ -139,6 +170,20 @@ poll_events :: proc(win: ^Window, input: ^Input) {
 			btn := int(event.button.button) - 1
 			if btn >= 0 && btn < 5 {
 				input.mouse_buttons[btn] = false
+				input.mouse_released[btn] = true
+			}
+
+		case .MOUSEWHEEL:
+			input.mouse_wheel_x += event.wheel.x
+			input.mouse_wheel_y += event.wheel.y
+
+		case .TEXTINPUT:
+			for ch in event.text.text {
+				if ch == 0 || input.text_input_count >= len(input.text_input) {
+					break
+				}
+				input.text_input[input.text_input_count] = ch
+				input.text_input_count += 1
 			}
 		}
 	}
@@ -196,6 +241,12 @@ sync_app_state :: proc(engine: ^app.App) {
 		mouse_dx      = input.mouse_dx,
 		mouse_dy      = input.mouse_dy,
 		mouse_buttons = input.mouse_buttons,
+		mouse_pressed = input.mouse_pressed,
+		mouse_released = input.mouse_released,
+		mouse_wheel_x = input.mouse_wheel_x,
+		mouse_wheel_y = input.mouse_wheel_y,
+		text_input_count = input.text_input_count,
+		text_input = input.text_input,
 	})
 
 	window := platform_bridge.window

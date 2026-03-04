@@ -25,12 +25,13 @@ What exists today:
 
 - **Language**: Odin (nightly build)
 - **Graphics backend**: Vulkan 1.3 — instance, physical device, logical device, swapchain, image views, render pass, framebuffers, graphics pipeline, double-buffered frame loop with semaphore/fence synchronization
-- **Asset import**: `.glb` mesh loading for a first Blender-to-engine path — extracts indexed triangle geometry and uploads it into Vulkan vertex/index buffers
+- **Asset import**: `.glb` mesh loading for a first Blender-to-engine path — extracts indexed triangle geometry, skinning data, and animation clips from the sample asset
 - **Shaders**: GLSL compiled to SPIR-V via glslc at build time
 - **Windowing & input**: SDL2 — keyboard, mouse, and window events (resize, close)
 - **Game loop**: Fixed 60 Hz timestep with accumulator pattern, variable render tick, delta cap at 0.25s
 - **ECS foundation**: `Entity` (distinct u64) + `World` type — spawn/destroy infrastructure, no component storage yet
 - **Rendering**: Imported mesh rendering from `examples/assets/` on a dark blue-gray background. Dynamic viewport/scissor — survives window resize without pipeline recreation.
+- **Animation playback**: `examples/animation_viewer` evaluates the sample GLB's skeletal clips on the CPU, skins the mesh every frame, and provides an in-window searchable clip picker with Play and Loop controls.
 
 Honest status: first Blender-exported mesh is on the render path. Materials, scene traversal, coordinate-bridge cleanup, and animation are still ahead.
 
@@ -92,8 +93,9 @@ Requires:
 # Build example apps (debug mode; validation enabled when installed)
 bash build.sh
 
-# Run the desktop example
+# Run the desktop examples
 ./bin/mesh_viewer
+./bin/animation_viewer
 
 # Run headless tests + smoke example
 bash test.sh
@@ -104,6 +106,7 @@ Press **ESC** to quit.
 ## Example Apps
 
 - `examples/mesh_viewer` is the current desktop/Vulkan consumer of the engine packages.
+- `examples/animation_viewer` plays the sample GLB's skeletal clips with a searchable in-window picker, clickable Play and Loop controls, and mouse-wheel scrolling through the clip list.
 - `examples/headless_smoke` exercises the headless app loop without SDL2 or Vulkan.
 
 The examples import the engine through the local collection:

@@ -1,7 +1,7 @@
 # Thor
 
 A Vulkan 1.3 game engine written in Odin, using SDL2 for windowing/input.
-Currently at **Milestone 3 (first slice)**: imported `.glb` mesh rendering, full graphics pipeline, ECS foundation, and a fixed-timestep game loop.
+Currently at **Milestone 3 (first slice)**: imported `.glb` mesh rendering, skeletal animation playback in the sample viewer, full graphics pipeline, ECS foundation, and a fixed-timestep game loop.
 
 ## Quick Start
 
@@ -9,8 +9,9 @@ Currently at **Milestone 3 (first slice)**: imported `.glb` mesh rendering, full
 # Build example apps (debug mode with validation layers)
 bash build.sh
 
-# Run desktop example
+# Run desktop examples
 ./bin/mesh_viewer
+./bin/animation_viewer
 
 # Run headless tests and smoke example
 bash test.sh
@@ -22,11 +23,12 @@ bash test.sh
 ## Project Structure
 
 ```bash
-build.sh                      # Builds example apps → bin/mesh_viewer, bin/headless_smoke
+build.sh                      # Builds example apps → bin/mesh_viewer, bin/animation_viewer, bin/headless_smoke
 test.sh                       # Runs app tests + headless smoke example
 engine/
   app/app.odin               # Headless app lifecycle, schedules, time/input/window resources
-  assets/assets.odin         # Minimal GLB mesh loader (POSITION + indices)
+  animation/animation.odin   # CPU clip sampling + skinning runtime for the animation viewer
+  assets/assets.odin         # Minimal GLB mesh loader + animation catalog extraction
   platform/platform.odin      # SDL2 windowing/input + app sync adapter bridge
   gfx/                        # Vulkan graphics subsystem
     gfx.odin                  #   Gfx_Context, create/destroy, swapchain recreation
@@ -35,10 +37,12 @@ engine/
     swapchain.odin             #   Swapchain, image views, format/present mode
     frame.odin                 #   Frame sync, command recording, image transitions
     mesh.odin                  #   Vertex/index buffer upload for imported meshes
+    ui.odin                    #   Lightweight 2D overlay pipeline for debug/example UI
   game/game.odin              # Game system registration + temporary render bridge
   ecs/ecs.odin                # Entity (u64), World, spawn/destroy
 examples/
   mesh_viewer/main.odin       # Desktop example consuming the engine through a collection import
+  animation_viewer/main.odin  # Desktop example for searchable clip selection + skeletal playback
   headless_smoke/main.odin    # Headless smoke example for app-loop development
   assets/*.glb                # Example-owned mesh assets used to validate the import path
 ```
@@ -56,6 +60,11 @@ import "engine/app"
 app.App, app.Stage, app.Time
 app.init(), app.tick(), app.render(), app.add_system()
 
+// Animation
+import "engine/animation"
+animation.Player
+animation.create_player(), animation.play_clip(), animation.update()
+
 // Graphics
 import "engine/gfx"
 gfx.Gfx_Context, gfx.Swapchain, gfx.Queue_Family_Indices, gfx.Context_Config
@@ -63,7 +72,9 @@ gfx.Render_Bridge, gfx.create_context(), gfx.install(), gfx.render_app()
 
 // Assets
 import "engine/assets"
-assets.Mesh, assets.Mesh_Vertex, assets.load_mesh_from_glb()
+assets.Mesh, assets.Mesh_Vertex, assets.Animation_Catalog, assets.Animation_Clip_Info
+assets.Skinned_Asset, assets.Animation_Clip, assets.Node_Transform
+assets.load_mesh_from_glb(), assets.load_animation_catalog_from_glb(), assets.load_skinned_asset_from_glb()
 
 // Game
 import "engine/game"

@@ -9,13 +9,19 @@ Scene_Push_Constants :: struct {
 
 build_scene_push_constants :: proc(elapsed: f64, aspect: f32) -> Scene_Push_Constants {
 	spin_angle := f32(elapsed * (math.TAU / 8.0))
-	model_correction := mat4_rotation_x(0.5 * math.PI)
-	model_spin := mat4_rotation_z(spin_angle)
-	model := mat4_mul(model_spin, model_correction)
+	return build_scene_push_constants_with_camera(
+		vec3(0.0, -2.8, 1.4),
+		vec3(0.0, 0.0, 0.1),
+		vec3(0.0, 0.0, 1.0),
+		aspect,
+		spin_angle,
+	)
+}
 
-	eye := vec3(0.0, -2.8, 1.4)
-	target := vec3(0.0, 0.0, 0.1)
-	up := vec3(0.0, 0.0, 1.0)
+build_scene_push_constants_with_camera :: proc(eye, target, up: Vec3, aspect, model_spin_angle: f32) -> Scene_Push_Constants {
+	model_correction := mat4_rotation_x(0.5 * math.PI)
+	model_spin := mat4_rotation_z(model_spin_angle)
+	model := mat4_mul(model_spin, model_correction)
 	view := mat4_look_at(eye, target, up)
 	proj := mat4_perspective_vulkan(45.0 * math.PI / 180.0, aspect, 0.1, 100.0)
 

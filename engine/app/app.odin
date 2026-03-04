@@ -36,6 +36,12 @@ Input_State :: struct {
 	mouse_dx:      i32,
 	mouse_dy:      i32,
 	mouse_buttons: [5]bool,
+	mouse_pressed: [5]bool,
+	mouse_released: [5]bool,
+	mouse_wheel_x: i32,
+	mouse_wheel_y: i32,
+	text_input_count: int,
+	text_input:    [32]u8,
 }
 
 Window_State :: struct {

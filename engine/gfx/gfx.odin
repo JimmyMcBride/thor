@@ -39,6 +39,10 @@ Gfx_Context :: struct {
 	pipeline_layout: vk.PipelineLayout,
 	pipeline:        vk.Pipeline,
 	mesh:            Gpu_Mesh,
+	ui_pipeline_layout: vk.PipelineLayout,
+	ui_pipeline:        vk.Pipeline,
+	ui_vertex_buffers:  [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
+	ui_vertex_memories: [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
 
 	// Frame state
 	current_frame: u32,
@@ -118,9 +122,23 @@ create_context :: proc(win: ^platform.Window, config: Context_Config) -> (ctx: G
 	ctx.render_pass = create_render_pass(ctx.device, ctx.swapchain.format, ctx.swapchain.depth_format) or_return
 	create_framebuffers(ctx.device, ctx.render_pass, &ctx.swapchain) or_return
 	ctx.pipeline_layout, ctx.pipeline = create_pipeline(ctx.device, ctx.render_pass) or_return
+	ctx.ui_pipeline_layout, ctx.ui_pipeline = create_ui_pipeline(ctx.device, ctx.render_pass) or_return
 
-	mesh := assets.load_mesh_from_glb(config.mesh_path) or_return
-	ctx.mesh = create_gpu_mesh(&ctx, mesh) or_return
+	for frame_index in 0 ..< MAX_FRAMES_IN_FLIGHT {
+		ctx.ui_vertex_buffers[frame_index], ctx.ui_vertex_memories[frame_index], ok = create_buffer(
+			&ctx,
+			UI_VERTEX_BUFFER_SIZE,
+			{.VERTEX_BUFFER},
+		)
+		if !ok {
+			return {}, false
+		}
+	}
+
+	if len(config.mesh_path) > 0 {
+		mesh := assets.load_mesh_from_glb(config.mesh_path) or_return
+		ctx.mesh = create_gpu_mesh(&ctx, mesh) or_return
+	}
 
 	// Create command pool
 	graphics_family := ctx.queue_indices.graphics_family.? or_return
@@ -172,7 +190,15 @@ destroy_context :: proc(ctx: ^Gfx_Context) {
 	vk.DeviceWaitIdle(ctx.device)
 
 	// Destroy pipeline
-	destroy_gpu_mesh(ctx.device, &ctx.mesh)
+	if ctx.mesh.index_count > 0 {
+		destroy_gpu_mesh(ctx.device, &ctx.mesh)
+	}
+	for frame_index in 0 ..< MAX_FRAMES_IN_FLIGHT {
+		vk.DestroyBuffer(ctx.device, ctx.ui_vertex_buffers[frame_index], nil)
+		vk.FreeMemory(ctx.device, ctx.ui_vertex_memories[frame_index], nil)
+	}
+	vk.DestroyPipeline(ctx.device, ctx.ui_pipeline, nil)
+	vk.DestroyPipelineLayout(ctx.device, ctx.ui_pipeline_layout, nil)
 	vk.DestroyPipeline(ctx.device, ctx.pipeline, nil)
 	vk.DestroyPipelineLayout(ctx.device, ctx.pipeline_layout, nil)
 	destroy_framebuffers(ctx.device, &ctx.swapchain)

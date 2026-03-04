@@ -12,6 +12,13 @@ examples/mesh_viewer/main.odin
   └── engine/game       (Game systems + temporary render bridge)
         └── engine/ecs  (Entity-Component System)
 
+examples/animation_viewer/main.odin
+  ├── engine/app        (Headless schedules + input/window state)
+  ├── engine/platform   (SDL2 windowing, mouse/text input)
+  ├── engine/assets     (Skinned mesh + clip import from GLB)
+  ├── engine/animation  (CPU clip sampling + skinning)
+  └── engine/gfx        (Vulkan mesh + overlay UI rendering)
+
 examples/headless_smoke/main.odin
   └── engine/app        (Headless app lifecycle, schedules, time/resources)
 ```
@@ -19,6 +26,7 @@ examples/headless_smoke/main.odin
 - `app` depends on `ecs` and owns engine state, schedules, and timestep flow
 - `platform` has no engine dependencies (only `core:c`, `vendor:sdl2`, `vendor:vulkan`)
 - `gfx` depends on `platform` (for window handle and Vulkan surface)
+- `animation` depends on `assets` for bind-pose mesh, node, and clip data
 - `game` depends on `app`; rendering remains temporarily bridged through `gfx`
 - `ecs` has no dependencies
 

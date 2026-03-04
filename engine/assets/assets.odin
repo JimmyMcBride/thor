@@ -27,10 +27,31 @@ Mesh :: struct {
 	indices:  []u32,
 }
 
+Animation_Clip_Info :: struct {
+	name:          string,
+	duration:      f32,
+	sampler_count: int,
+	channel_count: int,
+}
+
+Animation_Catalog :: struct {
+	clips:        [dynamic]Animation_Clip_Info,
+	name_storage: [dynamic][]u8,
+}
+
 destroy_mesh :: proc(mesh: ^Mesh) {
 	delete(mesh.vertices)
 	delete(mesh.indices)
 	mesh^ = {}
+}
+
+destroy_animation_catalog :: proc(catalog: ^Animation_Catalog) {
+	for storage in catalog.name_storage {
+		delete(storage)
+	}
+	delete(catalog.name_storage)
+	delete(catalog.clips)
+	catalog^ = {}
 }
 
 Gltf_Buffer_View :: struct {
@@ -45,12 +66,15 @@ Gltf_Accessor :: struct {
 	byte_offset:    u32    `json:"byteOffset"`,
 	component_type: u32    `json:"componentType"`,
 	count:          u32,
+	normalized:     bool,
 	type:           string,
 }
 
 Gltf_Primitive_Attributes :: struct {
 	position: int `json:"POSITION"`,
 	normal:   int `json:"NORMAL"`,
+	joints_0: int `json:"JOINTS_0"`,
+	weights_0: int `json:"WEIGHTS_0"`,
 }
 
 Gltf_Mesh_Primitive :: struct {
@@ -64,9 +88,52 @@ Gltf_Mesh :: struct {
 	primitives: []Gltf_Mesh_Primitive,
 }
 
+Gltf_Node :: struct {
+	name:        string,
+	children:    []int,
+	mesh:        int,
+	skin:        int,
+	translation: [3]f32,
+	rotation:    [4]f32,
+	scale:       [3]f32,
+	transform_matrix: [16]f32 `json:"matrix"`,
+}
+
+Gltf_Skin :: struct {
+	name:                  string,
+	inverse_bind_matrices: int `json:"inverseBindMatrices"`,
+	skeleton:              int,
+	joints:                []int,
+}
+
+Gltf_Animation_Sampler :: struct {
+	input:         int,
+	output:        int,
+	interpolation: string,
+}
+
+Gltf_Animation_Channel_Target :: struct {
+	node: int,
+	path: string,
+}
+
+Gltf_Animation_Channel :: struct {
+	sampler: int,
+	target:  Gltf_Animation_Channel_Target,
+}
+
+Gltf_Animation :: struct {
+	name:     string,
+	samplers: []Gltf_Animation_Sampler,
+	channels: []Gltf_Animation_Channel,
+}
+
 Gltf_Document :: struct {
 	accessors:    []Gltf_Accessor,
+	nodes:        []Gltf_Node,
+	skins:        []Gltf_Skin,
 	buffer_views: []Gltf_Buffer_View `json:"bufferViews"`,
+	animations:   []Gltf_Animation,
 	meshes:       []Gltf_Mesh,
 }
 
@@ -143,6 +210,54 @@ load_mesh_from_glb :: proc(path: string) -> (mesh: Mesh, ok: bool) {
 
 	fmt.println("Loaded mesh asset:", path, "vertices=", len(mesh.vertices), "indices=", len(mesh.indices))
 	return mesh, true
+}
+
+load_animation_catalog_from_glb :: proc(path: string) -> (catalog: Animation_Catalog, ok: bool) {
+	file_data, read_ok := os.read_entire_file(path)
+	if !read_ok {
+		fmt.eprintln("Failed to read animation asset:", path)
+		return {}, false
+	}
+	defer delete(file_data)
+
+	json_chunk, bin_chunk, chunk_ok := parse_glb(file_data)
+	if !chunk_ok {
+		return {}, false
+	}
+
+	doc: Gltf_Document
+	if err := json.unmarshal(json_chunk, &doc, allocator=context.temp_allocator); err != nil {
+		fmt.eprintln("Failed to parse glTF JSON:", err)
+		return {}, false
+	}
+
+	if len(doc.animations) == 0 {
+		fmt.eprintln("glTF file has no animations:", path)
+		return {}, false
+	}
+
+	for animation, index in doc.animations {
+		duration, duration_ok := animation_duration(doc, animation, bin_chunk)
+		if !duration_ok {
+			return {}, false
+		}
+
+		clip_name := animation.name
+		if len(clip_name) == 0 {
+			clip_name = fmt.aprintf("Animation_%d", index)
+		}
+		name_storage := clone_string_bytes(clip_name)
+		append(&catalog.name_storage, name_storage)
+		append(&catalog.clips, Animation_Clip_Info{
+			name          = string(name_storage),
+			duration      = duration,
+			sampler_count = len(animation.samplers),
+			channel_count = len(animation.channels),
+		})
+	}
+
+	fmt.println("Loaded animation catalog:", path, "clips=", len(catalog.clips))
+	return catalog, true
 }
 
 parse_glb :: proc(file_data: []byte) -> (json_chunk: []byte, bin_chunk: []byte, ok: bool) {
@@ -362,6 +477,8 @@ accessor_component_count :: proc(kind: string) -> int {
 		return 3
 	case "VEC4":
 		return 4
+	case "MAT4":
+		return 16
 	case:
 		return 0
 	}
@@ -369,6 +486,53 @@ accessor_component_count :: proc(kind: string) -> int {
 
 accessor_packed_size :: proc(accessor: Gltf_Accessor) -> int {
 	return accessor_component_size(accessor.component_type) * accessor_component_count(accessor.type)
+}
+
+animation_duration :: proc(doc: Gltf_Document, animation: Gltf_Animation, bin_chunk: []byte) -> (duration: f32, ok: bool) {
+	for sampler in animation.samplers {
+		sampler_duration, duration_ok := decode_max_time(doc, sampler.input, bin_chunk)
+		if !duration_ok {
+			return 0, false
+		}
+		duration = math.max(duration, sampler_duration)
+	}
+
+	return duration, true
+}
+
+decode_max_time :: proc(doc: Gltf_Document, accessor_index: int, bin_chunk: []byte) -> (max_time: f32, ok: bool) {
+	accessor, _, data, stride, access_ok := accessor_bytes(doc, accessor_index, bin_chunk)
+	if !access_ok {
+		return 0, false
+	}
+	if accessor.component_type != GLTF_COMPONENT_TYPE_FLOAT || accessor.type != "SCALAR" {
+		fmt.eprintln("Only float SCALAR animation inputs are supported")
+		return 0, false
+	}
+	if stride < 4 {
+		fmt.eprintln("Animation input accessor stride is invalid")
+		return 0, false
+	}
+
+	base_offset := int(accessor.byte_offset)
+	for i in 0 ..< int(accessor.count) {
+		offset := base_offset + i * stride
+		if offset + 4 > len(data) {
+			fmt.eprintln("Animation input accessor overruns buffer view")
+			return 0, false
+		}
+
+		value := transmute(f32)endian.unchecked_get_u32le(data[offset:])
+		max_time = math.max(max_time, value)
+	}
+
+	return max_time, true
+}
+
+clone_string_bytes :: proc(src: string) -> []u8 {
+	buf := make([]u8, len(src))
+	copy(buf, src[:])
+	return buf
 }
 
 normalize_mesh :: proc(mesh: ^Mesh) {

@@ -5,9 +5,10 @@
 ## Build and Run
 
 ```bash
-bash build.sh        # Builds examples to bin/mesh_viewer and bin/headless_smoke
-./bin/mesh_viewer    # Run desktop example (ESC to quit, window is resizable)
-bash test.sh         # Run engine/app tests + headless smoke example
+bash build.sh             # Builds examples to bin/mesh_viewer, bin/animation_viewer, and bin/headless_smoke
+./bin/mesh_viewer         # Run the static mesh desktop example
+./bin/animation_viewer    # Run the skeletal animation viewer example
+bash test.sh              # Run engine/app + engine/assets tests and the headless smoke example
 ```
 
 The build script uses the Odin nightly compiler at:
