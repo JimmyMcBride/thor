@@ -31,7 +31,7 @@ Gfx_Context :: struct {
 
 	// Sync objects (per frame in flight)
 	image_available_semaphores: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
-	render_finished_semaphores: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
+	render_finished_semaphores: []vk.Semaphore,
 	in_flight_fences:           [MAX_FRAMES_IN_FLIGHT]vk.Fence,
 
 	// Pipeline
@@ -68,6 +68,33 @@ Render_Bridge :: struct {
 
 render_bridge: Render_Bridge
 
+create_render_finished_semaphores :: proc(device: vk.Device, image_count: int) -> (semaphores: []vk.Semaphore, ok: bool) {
+	semaphores = make([]vk.Semaphore, image_count)
+	sem_info := vk.SemaphoreCreateInfo{
+		sType = .SEMAPHORE_CREATE_INFO,
+	}
+
+	for i in 0 ..< image_count {
+		if vk.CreateSemaphore(device, &sem_info, nil, &semaphores[i]) != .SUCCESS {
+			for j in 0 ..< i {
+				vk.DestroySemaphore(device, semaphores[j], nil)
+			}
+			delete(semaphores)
+			return nil, false
+		}
+	}
+
+	return semaphores, true
+}
+
+destroy_render_finished_semaphores :: proc(device: vk.Device, semaphores: ^[]vk.Semaphore) {
+	for semaphore in semaphores^ {
+		vk.DestroySemaphore(device, semaphore, nil)
+	}
+	delete(semaphores^)
+	semaphores^ = nil
+}
+
 install :: proc(engine: ^app.App, bridge: Render_Bridge) {
 	render_bridge = bridge
 	app.add_system(engine, .Shutdown, clear_bridge)
@@ -75,6 +102,13 @@ install :: proc(engine: ^app.App, bridge: Render_Bridge) {
 
 current_context :: proc() -> ^Gfx_Context {
 	return render_bridge.ctx
+}
+
+wait_idle :: proc(ctx: ^Gfx_Context) {
+	if ctx == nil || ctx.device == nil {
+		return
+	}
+	vk.DeviceWaitIdle(ctx.device)
 }
 
 render_app :: proc(engine: ^app.App) {
@@ -199,11 +233,15 @@ create_context :: proc(win: ^platform.Window, config: Context_Config) -> (ctx: G
 
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		if vk.CreateSemaphore(ctx.device, &sem_info, nil, &ctx.image_available_semaphores[i]) != .SUCCESS ||
-		   vk.CreateSemaphore(ctx.device, &sem_info, nil, &ctx.render_finished_semaphores[i]) != .SUCCESS ||
 		   vk.CreateFence(ctx.device, &fence_info, nil, &ctx.in_flight_fences[i]) != .SUCCESS {
 			fmt.eprintln("Failed to create sync objects")
 			return {}, false
 		}
+	}
+	ctx.render_finished_semaphores, ok = create_render_finished_semaphores(ctx.device, len(ctx.swapchain.images))
+	if !ok {
+		fmt.eprintln("Failed to create render-finished semaphores")
+		return {}, false
 	}
 
 	fmt.println("Graphics context created")
@@ -238,9 +276,9 @@ destroy_context :: proc(ctx: ^Gfx_Context) {
 	vk.DestroyRenderPass(ctx.device, ctx.render_pass, nil)
 
 	// Destroy sync objects
+	destroy_render_finished_semaphores(ctx.device, &ctx.render_finished_semaphores)
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		vk.DestroySemaphore(ctx.device, ctx.image_available_semaphores[i], nil)
-		vk.DestroySemaphore(ctx.device, ctx.render_finished_semaphores[i], nil)
 		vk.DestroyFence(ctx.device, ctx.in_flight_fences[i], nil)
 	}
 
@@ -274,6 +312,7 @@ recreate_swapchain :: proc(ctx: ^Gfx_Context) {
 	old_swapchain := ctx.swapchain.handle
 
 	// Destroy framebuffers and old image views but keep the swapchain handle for oldSwapchain
+	destroy_render_finished_semaphores(ctx.device, &ctx.render_finished_semaphores)
 	destroy_framebuffers(ctx.device, &ctx.swapchain)
 	for view in ctx.swapchain.image_views {
 		vk.DestroyImageView(ctx.device, view, nil)
@@ -299,6 +338,11 @@ recreate_swapchain :: proc(ctx: ^Gfx_Context) {
 	}
 
 	ctx.swapchain = new_sc
+	ctx.render_finished_semaphores, ok = create_render_finished_semaphores(ctx.device, len(ctx.swapchain.images))
+	if !ok {
+		fmt.eprintln("Failed to recreate render-finished semaphores")
+		return
+	}
 	ctx.framebuffer_resized = false
 	create_framebuffers(ctx.device, ctx.render_pass, &ctx.swapchain)
 }

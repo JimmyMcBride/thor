@@ -64,6 +64,7 @@ begin_frame :: proc(ctx: ^Gfx_Context) -> bool {
 // end_frame submits the command buffer and presents the image.
 end_frame :: proc(ctx: ^Gfx_Context) {
 	cmd := ctx.command_buffers[ctx.current_frame]
+	render_finished_semaphore := ctx.render_finished_semaphores[ctx.image_index]
 	vk.CmdEndRenderPass(cmd)
 	vk.EndCommandBuffer(cmd)
 
@@ -76,7 +77,7 @@ end_frame :: proc(ctx: ^Gfx_Context) {
 		commandBufferCount   = 1,
 		pCommandBuffers      = &cmd,
 		signalSemaphoreCount = 1,
-		pSignalSemaphores    = &ctx.render_finished_semaphores[ctx.current_frame],
+		pSignalSemaphores    = &render_finished_semaphore,
 	}
 
 	vk.QueueSubmit(ctx.graphics_queue, 1, &submit_info, ctx.in_flight_fences[ctx.current_frame])
@@ -84,7 +85,7 @@ end_frame :: proc(ctx: ^Gfx_Context) {
 	present_info := vk.PresentInfoKHR {
 		sType              = .PRESENT_INFO_KHR,
 		waitSemaphoreCount = 1,
-		pWaitSemaphores    = &ctx.render_finished_semaphores[ctx.current_frame],
+		pWaitSemaphores    = &render_finished_semaphore,
 		swapchainCount     = 1,
 		pSwapchains        = &ctx.swapchain.handle,
 		pImageIndices       = &ctx.image_index,

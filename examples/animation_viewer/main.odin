@@ -108,6 +108,8 @@ main :: proc() {
 	viewer.gpu_mesh = dynamic_mesh
 	defer gfx.destroy_dynamic_gpu_mesh(ctx.device, &viewer.gpu_mesh)
 	defer gfx.destroy_ui_draw_list(&viewer.ui)
+	// Flush the last submitted frame before deferred GPU resources are destroyed.
+	defer gfx.wait_idle(&ctx)
 	defer delete(viewer.filtered_clip_indices)
 	defer delete(viewer.search_query)
 

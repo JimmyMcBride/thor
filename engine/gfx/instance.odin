@@ -2,10 +2,144 @@ package gfx
 
 import "core:fmt"
 import "core:c"
+import "core:os"
+import filepath "core:path/filepath"
+import "core:strings"
 import vk "vendor:vulkan"
 import "../platform"
 
 VALIDATION_LAYER :: "VK_LAYER_KHRONOS_validation"
+VALIDATION_LAYER_MANIFEST :: "VkLayer_khronos_validation.json"
+VALIDATION_LAYER_LIBRARY :: "libVkLayer_khronos_validation.so"
+
+find_named_file_dir :: proc(search_root, file_name: string, allocator := context.allocator) -> (dir: string, ok: bool) {
+	if search_root == "" || !os.exists(search_root) {
+		return "", false
+	}
+
+	search_handle, open_err := os.open(search_root, os.O_RDONLY)
+	if open_err != nil {
+		return "", false
+	}
+	defer os.close(search_handle)
+
+	entries, read_err := os.read_dir(search_handle, -1, context.temp_allocator)
+	if read_err != nil {
+		return "", false
+	}
+	defer os.file_info_slice_delete(entries, context.temp_allocator)
+
+	for entry in entries {
+		if entry.is_dir {
+			dir, ok = find_named_file_dir(entry.fullpath, file_name, allocator)
+			if ok {
+				return dir, true
+			}
+			continue
+		}
+		if entry.name != file_name {
+			continue
+		}
+
+		parent_dir, _ := filepath.split(entry.fullpath)
+		dir, alloc_err := strings.clone(parent_dir, allocator)
+		if alloc_err != nil {
+			return "", false
+		}
+		return dir, true
+	}
+
+	return "", false
+}
+
+prepend_library_path :: proc(dir: string) -> bool {
+	existing_library_path, library_path_set := os.lookup_env("LD_LIBRARY_PATH", context.allocator)
+	defer if library_path_set {
+		delete(existing_library_path)
+	}
+
+	library_path_value := dir
+	owned_library_path_value := false
+	if library_path_set && existing_library_path != "" {
+		joined_library_path, join_err := strings.concatenate([]string{dir, ":", existing_library_path})
+		if join_err != nil {
+			fmt.eprintln("Failed to build LD_LIBRARY_PATH value")
+			return false
+		}
+		library_path_value = joined_library_path
+		owned_library_path_value = true
+	}
+	defer if owned_library_path_value {
+		delete(library_path_value)
+	}
+
+	if err := os.set_env("LD_LIBRARY_PATH", library_path_value); err != nil {
+		fmt.eprintln("Failed to set LD_LIBRARY_PATH:", err)
+		return false
+	}
+
+	return true
+}
+
+set_validation_layer_path_from_root :: proc(search_root: string) -> bool {
+	manifest_dir, manifest_ok := find_named_file_dir(search_root, VALIDATION_LAYER_MANIFEST)
+	if !manifest_ok {
+		return false
+	}
+	defer delete(manifest_dir)
+
+	library_dir, library_ok := find_named_file_dir(search_root, VALIDATION_LAYER_LIBRARY)
+	if !library_ok {
+		fmt.eprintln("Found Vulkan validation manifest but missing", VALIDATION_LAYER_LIBRARY, "under", search_root)
+		return false
+	}
+	defer delete(library_dir)
+
+	if err := os.set_env("VK_LAYER_PATH", manifest_dir); err != nil {
+		fmt.eprintln("Failed to set VK_LAYER_PATH:", err)
+		return false
+	}
+	if !prepend_library_path(library_dir) {
+		return false
+	}
+
+	fmt.println("Using Vulkan validation layer manifest from:", manifest_dir)
+	return true
+}
+
+try_configure_validation_layer_path :: proc() {
+	existing_layer_path, layer_path_set := os.lookup_env("VK_LAYER_PATH", context.allocator)
+	if layer_path_set {
+		delete(existing_layer_path)
+		return
+	}
+
+	if set_validation_layer_path_from_root("/usr/share/vulkan/explicit_layer.d") do return
+	if set_validation_layer_path_from_root("/etc/vulkan/explicit_layer.d") do return
+	if set_validation_layer_path_from_root("/usr/local/share/vulkan/explicit_layer.d") do return
+
+	home_dir, home_ok := os.lookup_env("HOME", context.allocator)
+	defer if home_ok {
+		delete(home_dir)
+	}
+	if !home_ok || home_dir == "" {
+		return
+	}
+
+	local_layer_dir, local_layer_err := filepath.join([]string{home_dir, ".local", "share", "vulkan", "explicit_layer.d"})
+	if local_layer_err == nil {
+		defer delete(local_layer_dir)
+		if set_validation_layer_path_from_root(local_layer_dir) do return
+	}
+
+	local_flatpak_root, local_flatpak_err := filepath.join([]string{home_dir, ".local", "share", "flatpak", "runtime", "org.freedesktop.Platform.GL.default"})
+	if local_flatpak_err == nil {
+		defer delete(local_flatpak_root)
+		if set_validation_layer_path_from_root(local_flatpak_root) do return
+	}
+
+	if set_validation_layer_path_from_root("/var/lib/flatpak/runtime/org.freedesktop.Platform.GL.default") do return
+}
 
 instance_layer_available :: proc(name: cstring) -> bool {
 	layer_count: u32
@@ -52,6 +186,12 @@ instance_extension_available :: proc(name: cstring) -> bool {
 create_instance :: proc(win: ^platform.Window) -> (instance: vk.Instance, ok: bool) {
 	// Load global Vulkan function pointers
 	vk.load_proc_addresses_global(platform.get_vk_get_instance_proc_addr())
+
+	when ODIN_DEBUG {
+		if !instance_layer_available(VALIDATION_LAYER) {
+			try_configure_validation_layer_path()
+		}
+	}
 
 	// Get required extensions from SDL
 	sdl_extensions, ext_ok := platform.get_vulkan_instance_extensions(win)
